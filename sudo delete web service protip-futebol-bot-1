@@ -1,0 +1,168 @@
+import os
+import requests
+import random
+from datetime import datetime
+import pytz
+
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# ===============================
+# CONFIGURAÇÕES
+# ===============================
+
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CANAL_VIP_ID = int(os.getenv("CANAL_VIP_ID"))
+TZ = pytz.timezone(os.getenv("TZ", "America/Sao_Paulo"))
+
+# API pública de jogos (sem chave paga)
+API_URL = "https://site.api.football-data.org/v4/matches"
+
+HEADERS = {
+    "X-Auth-Token": "demo"  # modo demo público
+}
+
+LIGAS_PRIORITARIAS = [
+    "Premier League",
+    "UEFA Champions League",
+    "La Liga",
+    "Serie A",
+    "Bundesliga",
+    "Ligue 1",
+    "Brasileirão",
+]
+
+# ===============================
+# FUNÇÕES
+# ===============================
+
+def gerar_palpite(match):
+    opcoes = [
+        "Vitória do mandante",
+        "Vitória do visitante",
+        "Mais de 1.5 gols",
+        "Mais de 2.5 gols",
+        "Ambas marcam",
+    ]
+    return random.choice(opcoes)
+
+def buscar_jogos_hoje():
+    hoje = datetime.now(TZ).date().isoformat()
+
+    params = {
+        "dateFrom": hoje,
+        "dateTo": hoje,
+    }
+
+    try:
+        response = requests.get(API_URL, headers=HEADERS, params=params, timeout=10)
+        data = response.json()
+        return data.get("matches", [])
+    except Exception as e:
+        print("Erro ao buscar jogos:", e)
+        return []
+
+def montar_sinais():
+    jogos = buscar_jogos_hoje()
+
+    if not jogos:
+        return "⚠️ Nenhum jogo encontrado hoje nas principais ligas."
+
+    sinais = []
+    count = 0
+
+    for jogo in jogos:
+        if count >= 8:
+            break
+
+        competicao = jogo["competition"]["name"]
+
+        if competicao not in LIGAS_PRIORITARIAS:
+            continue
+
+        mandante = jogo["homeTeam"]["name"]
+        visitante = jogo["awayTeam"]["name"]
+        horario = jogo["utcDate"]
+
+        palpite = gerar_palpite(jogo)
+
+        sinais.append(
+            f"⚽ {mandante} x {visitante}\n"
+            f"📊 Palpite: {palpite}\n"
+        )
+        count += 1
+
+    if not sinais:
+        return "⚠️ Nenhum jogo filtrado hoje."
+
+    mensagem = (
+        "🔥 **SINAIS VIP DO DIA** 🔥\n\n"
+        + "\n".join(sinais)
+        + "\n📌 Gestão recomendada: 1 unidade por entrada\n"
+        + "⏰ Atualizado automaticamente\n"
+    )
+
+    return mensagem
+
+# ===============================
+# COMANDOS
+# ===============================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 Bot VIP ativo.\n"
+        "Os sinais são enviados automaticamente às 08:00 (Brasília)."
+    )
+
+async def enviar_sinais_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = montar_sinais()
+    await context.bot.send_message(
+        chat_id=CANAL_VIP_ID,
+        text=texto,
+        parse_mode="Markdown"
+    )
+    await update.message.reply_text("✅ Sinais enviados no canal VIP.")
+
+# ===============================
+# ENVIO AUTOMÁTICO 08:00
+# ===============================
+
+async def envio_automatico(app):
+    texto = montar_sinais()
+    await app.bot.send_message(
+        chat_id=CANAL_VIP_ID,
+        text=texto,
+        parse_mode="Markdown"
+    )
+
+# ===============================
+# MAIN
+# ===============================
+
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("enviar", enviar_sinais_manual))
+
+    scheduler = AsyncIOScheduler(timezone=TZ)
+    scheduler.add_job(
+        envio_automatico,
+        trigger="cron",
+        hour=8,
+        minute=0,
+        args=[app],
+    )
+    scheduler.start()
+
+    print("🤖 Bot VIP rodando...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
